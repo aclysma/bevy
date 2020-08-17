@@ -1,5 +1,5 @@
 use crate::app_builder::AppBuilder;
-use bevy_ecs::{ParallelExecutor, Resources, Schedule, World};
+use bevy_ecs::{DefaultExecutor, Resources, Schedule, World};
 
 /// Containers of app logic and data
 ///
@@ -27,9 +27,9 @@ pub struct App {
     pub resources: Resources,
     pub runner: Box<dyn Fn(App)>,
     pub schedule: Schedule,
-    pub executor: ParallelExecutor,
+    pub executor: Option<DefaultExecutor>,
     pub startup_schedule: Schedule,
-    pub startup_executor: ParallelExecutor,
+    pub startup_executor: Option<DefaultExecutor>,
 }
 
 impl Default for App {
@@ -38,9 +38,9 @@ impl Default for App {
             world: Default::default(),
             resources: Default::default(),
             schedule: Default::default(),
-            executor: Default::default(),
+            executor: None, //DefaultExecutor::new("App", true),
             startup_schedule: Default::default(),
-            startup_executor: ParallelExecutor::without_tracker_clears(),
+            startup_executor: None, //DefaultExecutor::new("Startup", false),
             runner: Box::new(run_once),
         }
     }
@@ -56,14 +56,19 @@ impl App {
     }
 
     pub fn update(&mut self) {
-        self.schedule.initialize(&mut self.resources);
+        self.schedule.initialize(&mut self.resources, &mut self.executor, "Startup", false);
         self.executor
+            .as_mut()
+            .unwrap()
             .run(&mut self.schedule, &mut self.world, &mut self.resources);
     }
 
     pub fn run(mut self) {
-        self.startup_schedule.initialize(&mut self.resources);
-        self.startup_executor.run(
+        self.startup_schedule.initialize(&mut self.resources, &mut self.startup_executor, "App", true);
+        self.startup_executor
+            .as_mut()
+            .unwrap()
+            .run(
             &mut self.startup_schedule,
             &mut self.world,
             &mut self.resources,

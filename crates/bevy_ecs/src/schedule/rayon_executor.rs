@@ -6,7 +6,7 @@ use crate::{
 use crossbeam_channel::{Receiver, Sender};
 use fixedbitset::FixedBitSet;
 use bevy_hecs::{ArchetypesGeneration, World};
-use rayon::ScopeFifo;
+//use rayon::ScopeFifo;
 use std::{
     ops::Range,
     sync::{Arc, Mutex},
@@ -21,13 +21,13 @@ use std::{
 /// * in a given stage, systems the read resource Y cannot run before systems registered before them that write resource Y
 
 #[derive(Debug)]
-pub struct ParallelExecutor {
+pub struct RayonExecutor {
     stages: Vec<ExecutorStage>,
     last_schedule_generation: usize,
     clear_trackers: bool,
 }
 
-impl Default for ParallelExecutor {
+impl Default for RayonExecutor {
     fn default() -> Self {
         Self {
             stages: Default::default(),
@@ -37,7 +37,7 @@ impl Default for ParallelExecutor {
     }
 }
 
-impl ParallelExecutor {
+impl RayonExecutor {
     pub fn without_tracker_clears() -> Self {
         Self {
             clear_trackers: false,
@@ -69,51 +69,6 @@ impl ParallelExecutor {
 }
 
 
-/// This can be added as an app resource to control the global `rayon::ThreadPool` used by ecs.
-// Dev internal note: We cannot directly expose a ThreadPoolBuilder here as it does not implement Send and Sync.
-#[derive(Debug, Default, Clone)]
-pub struct ParallelExecutorOptions {
-    /// If some value, we'll set up the thread pool to use at most n threads. See `rayon::ThreadPoolBuilder::num_threads`.
-    num_threads: Option<usize>,
-    /// If some value, we'll set up the thread pool's' workers to the given stack size. See `rayon::ThreadPoolBuilder::stack_size`.
-    stack_size: Option<usize>,
-    // TODO: Do we also need/want to expose other features (*_handler, etc.)
-}
-
-impl ParallelExecutorOptions {
-    /// Creates a new ParallelExecutorOptions instance
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the num_threads option, using the builder pattern
-    pub fn with_num_threads(mut self, num_threads: Option<usize>) -> Self {
-        self.num_threads = num_threads;
-        self
-    }
-
-    /// Sets the stack_size option, using the builder pattern. WARNING: Only use this if you know what you're doing,
-    /// otherwise your application may run into stability and performance issues.
-    pub fn with_stack_size(mut self, stack_size: Option<usize>) -> Self {
-        self.stack_size = stack_size;
-        self
-    }
-
-    /// Creates a new ThreadPoolBuilder based on the current options.
-    pub(crate) fn create_builder(&self) -> rayon::ThreadPoolBuilder {
-        let mut builder = rayon::ThreadPoolBuilder::new();
-
-        if let Some(num_threads) = self.num_threads {
-            builder = builder.num_threads(num_threads);
-        }
-
-        if let Some(stack_size) = self.stack_size {
-            builder = builder.stack_size(stack_size);
-        }
-
-        builder
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ExecutorStage {
@@ -266,7 +221,7 @@ impl ExecutorStage {
         &mut self,
         systems: &[Arc<Mutex<Box<dyn System>>>],
         run_ready_type: RunReadyType,
-        scope: &ScopeFifo<'run>,
+        //scope: &ScopeFifo<'run>,
         world: &'run World,
         resources: &'run Resources,
     ) -> RunReadyResult {
@@ -312,11 +267,11 @@ impl ExecutorStage {
                 // handle multi-threaded system
                 let sender = self.sender.clone();
                 self.running_systems.insert(system_index);
-                scope.spawn_fifo(move |_| {
+                //scope.spawn_fifo(move |_| {
                     let mut system = system.lock().unwrap();
                     system.run(world, resources);
                     sender.send(system_index).unwrap();
-                });
+                //});
 
                 systems_currently_running = true;
             }
@@ -370,10 +325,16 @@ impl ExecutorStage {
             // if there are no upcoming thread local systems, run everything right now
             0..systems.len()
         };
-        rayon::scope_fifo(|scope| {
+        //rayon::scope_fifo(|scope| {
             run_ready_result =
-                self.run_ready_systems(systems, RunReadyType::Range(run_ready_system_index_range), scope, world, resources);
-        });
+                self.run_ready_systems(
+                    systems,
+                    RunReadyType::Range(run_ready_system_index_range),
+                    //scope,
+                    world,
+                    resources
+                );
+        //});
         loop {
             // if all systems in the stage are finished, break out of the loop
             if self.finished_systems.count_ones(..) == systems.len() {
@@ -394,7 +355,7 @@ impl ExecutorStage {
                 run_ready_result = RunReadyResult::Ok;
             } else {
                 // wait for a system to finish, then run its dependents
-                rayon::scope_fifo(|scope| {
+                //rayon::scope_fifo(|scope| {
                     loop {
                         // if all systems in the stage are finished, break out of the loop
                         if self.finished_systems.count_ones(..) == systems.len() {
@@ -406,7 +367,7 @@ impl ExecutorStage {
                         run_ready_result = self.run_ready_systems(
                             systems,
                             RunReadyType::Dependents(finished_system),
-                            scope,
+                            //scope,
                             world,
                             resources,
                         );
@@ -416,7 +377,7 @@ impl ExecutorStage {
                             break;
                         }
                     }
-                });
+                //});
             }
         }
 
@@ -435,7 +396,7 @@ impl ExecutorStage {
 
 #[cfg(test)]
 mod tests {
-    use super::ParallelExecutor;
+    use super::RayonExecutor;
     use crate::{
         resource::{Res, ResMut, Resources},
         schedule::Schedule,
@@ -476,7 +437,7 @@ mod tests {
         schedule.add_system_to_stage("PreArchetypeChange", insert.system());
         schedule.add_system_to_stage("PostArchetypeChange", read.system());
 
-        let mut executor = ParallelExecutor::default();
+        let mut executor = RayonExecutor::default();
         executor.run(&mut schedule, &mut world, &mut resources);
     }
 
@@ -504,7 +465,7 @@ mod tests {
         schedule.add_system_to_stage("update", insert.thread_local_system());
         schedule.add_system_to_stage("update", read.system());
 
-        let mut executor = ParallelExecutor::default();
+        let mut executor = RayonExecutor::default();
         executor.run(&mut schedule, &mut world, &mut resources);
     }
 
@@ -623,7 +584,7 @@ mod tests {
         schedule.add_system_to_stage("C", write_f64_res.system());
 
         fn run_executor_and_validate(
-            executor: &mut ParallelExecutor,
+            executor: &mut RayonExecutor,
             schedule: &mut Schedule,
             world: &mut World,
             resources: &mut Resources,
@@ -697,7 +658,7 @@ mod tests {
             );
         }
 
-        let mut executor = ParallelExecutor::default();
+        let mut executor = RayonExecutor::default();
         run_executor_and_validate(&mut executor, &mut schedule, &mut world, &mut resources);
         // run again (with counter reset) to ensure executor works correctly across runs
         *resources.get::<Counter>().unwrap().count.lock().unwrap() = 0;

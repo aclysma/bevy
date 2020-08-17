@@ -9,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
+use super::DefaultExecutor;
 
 /// An ordered collection of stages, which each contain an ordered list of [System]s.
 /// Schedules are essentially the "execution plan" for an App's systems.
@@ -165,19 +166,34 @@ impl Schedule {
     }
 
     // TODO: move this code to ParallelExecutor
-    pub fn initialize(&mut self, resources: &mut Resources) {
+    pub fn initialize(
+        &mut self,
+        resources: &mut Resources,
+        executor: &mut Option<DefaultExecutor>,
+        name: &str,
+        clear_trackers: bool,
+    ) {
         if self.last_initialize_generation == self.generation {
             return;
         }
 
-        let thread_pool_builder = resources
+        let executor_options = resources
             .get::<ParallelExecutorOptions>()
             .map(|options| (*options).clone())
-            .unwrap_or_else(|| ParallelExecutorOptions::default())
-            .create_builder();
-        // For now, bevy_ecs only uses the global thread pool so it is sufficient to configure it once here.
-        // Dont call .unwrap() as the function is called twice..
-        let _ = thread_pool_builder.build_global();
+            .unwrap_or_else(|| ParallelExecutorOptions::default());
+
+        if executor.is_none() {
+            *executor = Some(DefaultExecutor::new(name, clear_trackers, &executor_options));
+        }
+
+        // let thread_pool_builder = resources
+        //     .get::<ParallelExecutorOptions>()
+        //     .map(|options| (*options).clone())
+        //     .unwrap_or_else(|| ParallelExecutorOptions::default())
+        //     .create_builder();
+        // // For now, bevy_ecs only uses the global thread pool so it is sufficient to configure it once here.
+        // // Dont call .unwrap() as the function is called twice..
+        // let _ = thread_pool_builder.build_global();
 
         for stage in self.stages.values_mut() {
             for system in stage.iter_mut() {
