@@ -1,8 +1,4 @@
-use crate::{
-    resource::Resources,
-    schedule::ParallelExecutorOptions,
-    system::{System, SystemId, ThreadLocalExecution},
-};
+use crate::{resource::Resources, schedule::ParallelExecutorOptions, system::{System, SystemId, ThreadLocalExecution}, ParallelExecutor};
 use bevy_hecs::World;
 use parking_lot::Mutex;
 use std::{
@@ -166,19 +162,31 @@ impl Schedule {
     }
 
     // TODO: move this code to ParallelExecutor
-    pub fn initialize(&mut self, resources: &mut Resources) {
+    pub fn initialize(
+        &mut self,
+        resources: &mut Resources,
+        executor: &mut Option<ParallelExecutor>,
+        name: &str,
+        clear_trackers: bool,
+    ) {
         if self.last_initialize_generation == self.generation {
             return;
         }
 
-        let thread_pool_builder = resources
-            .get::<ParallelExecutorOptions>()
-            .map(|options| (*options).clone())
-            .unwrap_or_else(ParallelExecutorOptions::default)
-            .create_builder();
-        // For now, bevy_ecs only uses the global thread pool so it is sufficient to configure it once here.
-        // Dont call .unwrap() as the function is called twice..
-        let _ = thread_pool_builder.build_global();
+        // If we haven't created the executor yet, do it now. The thread pool is tweakable by
+        // setting ParallelExecutorOptions in the resources
+        if executor.is_none() {
+            let mut task_pool_builder = resources
+                .get::<ParallelExecutorOptions>()
+                .map(|options| (*options).clone())
+                .unwrap_or_else(ParallelExecutorOptions::default)
+                .create_builder();
+
+            task_pool_builder = task_pool_builder.thread_name(name.to_string());
+
+            let task_pool = task_pool_builder.build();
+            *executor = Some(ParallelExecutor::new(task_pool, clear_trackers))
+        }
 
         for stage in self.stages.values_mut() {
             for system in stage.iter_mut() {

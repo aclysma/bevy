@@ -7,7 +7,6 @@ use bevy_hecs::{ArchetypesGeneration, World};
 use crossbeam_channel::{Receiver, Sender};
 use fixedbitset::FixedBitSet;
 use parking_lot::Mutex;
-use rayon::ScopeFifo;
 use std::{ops::Range, sync::Arc};
 
 /// Executes each schedule stage in parallel by analyzing system dependencies.
@@ -18,8 +17,8 @@ use std::{ops::Range, sync::Arc};
 /// * in a given stage, systems that mutate resource Y cannot run before systems registered before them that read/write resource Y
 /// * in a given stage, systems the read resource Y cannot run before systems registered before them that write resource Y
 
-#[derive(Debug)]
 pub struct ParallelExecutor {
+    task_pool: bevy_tasks::TaskPool,
     stages: Vec<ExecutorStage>,
     last_schedule_generation: usize,
     clear_trackers: bool,
@@ -27,19 +26,17 @@ pub struct ParallelExecutor {
 
 impl Default for ParallelExecutor {
     fn default() -> Self {
-        Self {
-            stages: Default::default(),
-            last_schedule_generation: usize::MAX, // MAX forces prepare to run the first time
-            clear_trackers: true,
-        }
+        ParallelExecutor::new(bevy_tasks::TaskPool::default(), false)
     }
 }
 
 impl ParallelExecutor {
-    pub fn without_tracker_clears() -> Self {
+    pub fn new(task_pool: bevy_tasks::TaskPool, clear_trackers: bool) -> Self {
         Self {
-            clear_trackers: false,
-            ..Default::default()
+            task_pool,
+            stages: Default::default(),
+            last_schedule_generation: usize::MAX, // MAX forces prepare to run the first time
+            clear_trackers,
         }
     }
 
@@ -54,7 +51,7 @@ impl ParallelExecutor {
         for (stage_name, executor_stage) in schedule.stage_order.iter().zip(self.stages.iter_mut())
         {
             if let Some(stage_systems) = schedule.stages.get_mut(stage_name) {
-                executor_stage.run(world, resources, stage_systems, schedule_changed);
+                executor_stage.run(world, resources, stage_systems, schedule_changed, &mut self.task_pool);
             }
         }
 
@@ -97,8 +94,8 @@ impl ParallelExecutorOptions {
     }
 
     /// Creates a new ThreadPoolBuilder based on the current options.
-    pub(crate) fn create_builder(&self) -> rayon::ThreadPoolBuilder {
-        let mut builder = rayon::ThreadPoolBuilder::new();
+    pub(crate) fn create_builder(&self) -> bevy_tasks::TaskPoolBuilder {
+        let mut builder = bevy_tasks::TaskPoolBuilder::new();
 
         if let Some(num_threads) = self.num_threads {
             builder = builder.num_threads(num_threads);
@@ -262,7 +259,7 @@ impl ExecutorStage {
         &mut self,
         systems: &[Arc<Mutex<Box<dyn System>>>],
         run_ready_type: RunReadyType,
-        scope: &ScopeFifo<'run>,
+        scope: &mut bevy_tasks::Scope<'run, ()>,
         world: &'run World,
         resources: &'run Resources,
     ) -> RunReadyResult {
@@ -308,7 +305,8 @@ impl ExecutorStage {
                 // handle multi-threaded system
                 let sender = self.sender.clone();
                 self.running_systems.insert(system_index);
-                scope.spawn_fifo(move |_| {
+
+                scope.spawn(async move {
                     let mut system = system.lock();
                     system.run(world, resources);
                     sender.send(system_index).unwrap();
@@ -327,6 +325,7 @@ impl ExecutorStage {
         resources: &mut Resources,
         systems: &[Arc<Mutex<Box<dyn System>>>],
         schedule_changed: bool,
+        task_pool: &mut bevy_tasks::TaskPool
     ) {
         // if the schedule has changed, clear executor state / fill it with new defaults
         if schedule_changed {
@@ -364,7 +363,8 @@ impl ExecutorStage {
                 // if there are no upcoming thread local systems, run everything right now
                 0..systems.len()
             };
-        rayon::scope_fifo(|scope| {
+
+        task_pool.scope(|scope| {
             run_ready_result = self.run_ready_systems(
                 systems,
                 RunReadyType::Range(run_ready_system_index_range),
@@ -393,7 +393,7 @@ impl ExecutorStage {
                 run_ready_result = RunReadyResult::Ok;
             } else {
                 // wait for a system to finish, then run its dependents
-                rayon::scope_fifo(|scope| {
+                task_pool.scope(|scope| {
                     loop {
                         // if all systems in the stage are finished, break out of the loop
                         if self.finished_systems.count_ones(..) == systems.len() {

@@ -28,9 +28,9 @@ pub struct App {
     pub resources: Resources,
     pub runner: Box<dyn Fn(App)>,
     pub schedule: Schedule,
-    pub executor: ParallelExecutor,
+    pub executor: Option<ParallelExecutor>,
     pub startup_schedule: Schedule,
-    pub startup_executor: ParallelExecutor,
+    pub startup_executor: Option<ParallelExecutor>,
 }
 
 impl Default for App {
@@ -41,7 +41,7 @@ impl Default for App {
             schedule: Default::default(),
             executor: Default::default(),
             startup_schedule: Default::default(),
-            startup_executor: ParallelExecutor::without_tracker_clears(),
+            startup_executor: Default::default(),
             runner: Box::new(run_once),
         }
     }
@@ -57,14 +57,14 @@ impl App {
     }
 
     pub fn update(&mut self) {
-        self.schedule.initialize(&mut self.resources);
-        self.executor
+        self.schedule.initialize(&mut self.resources, &mut self.executor, "Update", false);
+        self.executor.as_mut().unwrap()
             .run(&mut self.schedule, &mut self.world, &mut self.resources);
     }
 
     pub fn run(mut self) {
-        self.startup_schedule.initialize(&mut self.resources);
-        self.startup_executor.run(
+        self.startup_schedule.initialize(&mut self.resources, &mut self.startup_executor, "Startup", true);
+        self.startup_executor.as_mut().unwrap().run(
             &mut self.startup_schedule,
             &mut self.world,
             &mut self.resources,
