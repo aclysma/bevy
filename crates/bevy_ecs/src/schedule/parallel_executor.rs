@@ -4,9 +4,9 @@ use crate::{
     system::{ArchetypeAccess, System, ThreadLocalExecution, TypeAccess},
 };
 use bevy_hecs::{ArchetypesGeneration, World};
-use crossbeam_channel::{Receiver, Sender};
 use fixedbitset::FixedBitSet;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::{ops::Range, sync::Arc};
 
 /// Executes each schedule stage in parallel by analyzing system dependencies.
@@ -65,6 +65,11 @@ impl ParallelExecutor {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+struct SystemRunResult {
+    system_index: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutorStage {
     /// each system's set of dependencies
@@ -77,15 +82,13 @@ pub struct ExecutorStage {
     /// the currently finished systems
     finished_systems: FixedBitSet,
     running_systems: FixedBitSet,
-
-    sender: Sender<usize>,
-    receiver: Receiver<usize>,
+    /// The finished systems for which we still need to spawn dependent tasks
+    spawn_dependents_queue: VecDeque<usize>,
     last_archetypes_generation: ArchetypesGeneration,
 }
 
 impl Default for ExecutorStage {
     fn default() -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
         Self {
             system_dependents: Default::default(),
             system_dependencies: Default::default(),
@@ -93,8 +96,7 @@ impl Default for ExecutorStage {
             next_thread_local_index: 0,
             finished_systems: Default::default(),
             running_systems: Default::default(),
-            sender,
-            receiver,
+            spawn_dependents_queue: Default::default(),
             last_archetypes_generation: ArchetypesGeneration(u64::MAX), // MAX forces prepare to run the first time
         }
     }
@@ -215,7 +217,7 @@ impl ExecutorStage {
         &mut self,
         systems: &[Arc<Mutex<Box<dyn System>>>],
         run_ready_type: RunReadyType,
-        scope: &mut bevy_tasks::Scope<'run, ()>,
+        scope: &mut bevy_tasks::Scope<'run, SystemRunResult>,
         world: &'run World,
         resources: &'run Resources,
     ) -> RunReadyResult {
@@ -259,13 +261,12 @@ impl ExecutorStage {
                 }
 
                 // handle multi-threaded system
-                let sender = self.sender.clone();
                 self.running_systems.insert(system_index);
 
                 scope.spawn(async move {
                     let mut system = system.lock();
                     system.run(world, resources);
-                    sender.send(system_index).unwrap();
+                    SystemRunResult { system_index }
                 });
 
                 systems_currently_running = true;
@@ -323,7 +324,7 @@ impl ExecutorStage {
                 0..systems.len()
             };
 
-        compute_pool.scope(|scope| {
+        let run_results = compute_pool.scope(|scope| {
             run_ready_result = self.run_ready_systems(
                 systems,
                 RunReadyType::Range(run_ready_system_index_range),
@@ -332,6 +333,11 @@ impl ExecutorStage {
                 resources,
             );
         });
+
+        for run_result in run_results {
+            self.spawn_dependents_queue
+                .push_back(run_result.system_index);
+        }
 
         loop {
             // if all systems in the stage are finished, break out of the loop
@@ -346,7 +352,7 @@ impl ExecutorStage {
                 system.run(world, resources);
                 system.run_thread_local(world, resources);
                 self.finished_systems.insert(thread_local_index);
-                self.sender.send(thread_local_index).unwrap();
+                self.spawn_dependents_queue.push_back(thread_local_index);
 
                 self.prepare_to_next_thread_local(world, systems, schedule_changed);
 
@@ -358,11 +364,13 @@ impl ExecutorStage {
                         break;
                     }
 
-                    let finished_system = self.receiver.recv().unwrap();
+                    let finished_system = self.spawn_dependents_queue.pop_front().expect(
+                        "finished_systems has low bits but spawn_dependents_queue is empty",
+                    );
                     self.finished_systems.insert(finished_system);
 
                     // wait for a system to finish, then run its dependents
-                    compute_pool.scope(|scope| {
+                    let run_results = compute_pool.scope(|scope| {
                         run_ready_result = self.run_ready_systems(
                             systems,
                             RunReadyType::Dependents(finished_system),
@@ -371,6 +379,11 @@ impl ExecutorStage {
                             resources,
                         );
                     });
+
+                    for run_result in run_results {
+                        self.spawn_dependents_queue
+                            .push_back(run_result.system_index);
+                    }
 
                     // if the next ready system is thread local, break out of this loop/bevy_tasks scope so it can be run
                     if let RunReadyResult::ThreadLocalReady(_) = run_ready_result {
