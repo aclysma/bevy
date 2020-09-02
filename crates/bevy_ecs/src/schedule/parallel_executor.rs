@@ -352,16 +352,17 @@ impl ExecutorStage {
 
                 run_ready_result = RunReadyResult::Ok;
             } else {
-                // wait for a system to finish, then run its dependents
-                compute_pool.scope(|scope| {
-                    loop {
-                        // if all systems in the stage are finished, break out of the loop
-                        if self.finished_systems.count_ones(..) == systems.len() {
-                            break;
-                        }
+                loop {
+                    // if all systems in the stage are finished, break out of the loop
+                    if self.finished_systems.count_ones(..) == systems.len() {
+                        break;
+                    }
 
-                        let finished_system = self.receiver.recv().unwrap();
-                        self.finished_systems.insert(finished_system);
+                    let finished_system = self.receiver.recv().unwrap();
+                    self.finished_systems.insert(finished_system);
+
+                    // wait for a system to finish, then run its dependents
+                    compute_pool.scope(|scope| {
                         run_ready_result = self.run_ready_systems(
                             systems,
                             RunReadyType::Dependents(finished_system),
@@ -369,13 +370,13 @@ impl ExecutorStage {
                             world,
                             resources,
                         );
+                    });
 
-                        // if the next ready system is thread local, break out of this loop/bevy_tasks scope so it can be run
-                        if let RunReadyResult::ThreadLocalReady(_) = run_ready_result {
-                            break;
-                        }
+                    // if the next ready system is thread local, break out of this loop/bevy_tasks scope so it can be run
+                    if let RunReadyResult::ThreadLocalReady(_) = run_ready_result {
+                        break;
                     }
-                });
+                }
             }
         }
 
