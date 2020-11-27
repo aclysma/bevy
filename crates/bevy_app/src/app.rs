@@ -64,13 +64,18 @@ impl App {
             .initialize(&mut self.world, &mut self.resources);
         self.executor
             .run(&mut self.schedule, &mut self.world, &mut self.resources);
+
+        profiling::finish_frame!();
     }
 
     pub fn initialize(&mut self) {
+        profiling::register_thread!();
+
         #[cfg(feature = "trace")]
         let startup_schedule_span = info_span!("startup_schedule");
         #[cfg(feature = "trace")]
         let _startup_schedule_guard = startup_schedule_span.enter();
+        profiling::scope!("startup_schedule");
         self.startup_schedule
             .initialize(&mut self.world, &mut self.resources);
         self.startup_executor.initialize(&mut self.resources);
@@ -86,6 +91,7 @@ impl App {
         let bevy_app_run_span = info_span!("bevy_app_run");
         #[cfg(feature = "trace")]
         let _bevy_app_run_guard = bevy_app_run_span.enter();
+        profiling::scope!("bevy_app_run");
 
         self.executor.initialize(&mut self.resources);
 

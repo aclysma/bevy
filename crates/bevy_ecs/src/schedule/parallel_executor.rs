@@ -56,6 +56,8 @@ impl ParallelExecutor {
         #[cfg(feature = "trace")]
         let _schedule_guard = schedule_span.enter();
 
+        profiling::scope!("schedule");
+
         let schedule_generation = schedule.generation();
         let schedule_changed = schedule.generation() != self.last_schedule_generation;
         if schedule_changed {
@@ -69,6 +71,8 @@ impl ParallelExecutor {
             let stage_span = info_span!("stage", name = stage_name.as_ref());
             #[cfg(feature = "trace")]
             let _stage_guard = stage_span.enter();
+
+            profiling::scope!("stage", &*stage_name);
             if let Some(stage_systems) = schedule.stages.get_mut(stage_name) {
                 executor_stage.run(world, resources, stage_systems, schedule_changed);
             }
@@ -325,6 +329,7 @@ impl ExecutorStage {
     }
 
     /// Runs the non-thread-local systems in the given prepared_system_range range
+    #[profiling::function]
     pub fn run_systems(
         &self,
         world: &World,
@@ -387,6 +392,7 @@ impl ExecutorStage {
                     }
                 }
 
+                profiling::scope!("Run Systems");
                 // Spawn the task
                 scope.spawn(async move {
                     // Wait until our dependencies are done
@@ -401,6 +407,8 @@ impl ExecutorStage {
                         let system_span = info_span!("system", name = system.name().as_ref());
                         #[cfg(feature = "trace")]
                         let _system_guard = system_span.enter();
+
+                        profiling::scope!("system", &*system.name());
 
                         // SAFETY: scheduler ensures safe world / resource access
                         unsafe {
@@ -454,6 +462,8 @@ impl ExecutorStage {
                     let system_span = info_span!("system", name = system.name().as_ref());
                     #[cfg(feature = "trace")]
                     let _system_guard = system_span.enter();
+                    profiling::scope!("system", &*system.name());
+
 
                     self.thread_local_system_indices.push(system_index);
                 }
@@ -501,6 +511,7 @@ impl ExecutorStage {
                 let system_span = info_span!("thread_local_system", name = system.name().as_ref());
                 #[cfg(feature = "trace")]
                 let _system_guard = system_span.enter();
+                profiling::scope!("thread_local_system", &*system.name());
 
                 system.run((), world, resources);
                 system.run_thread_local(world, resources);
@@ -535,6 +546,7 @@ impl ExecutorStage {
                     let system_span = info_span!("system", name = system.name().as_ref());
                     #[cfg(feature = "trace")]
                     let _system_guard = system_span.enter();
+                    profiling::scope!("system", &*system.name());
                     system.run_thread_local(world, resources);
                 }
                 ThreadLocalExecution::Immediate => { /* already ran */ }

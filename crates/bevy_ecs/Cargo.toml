@@ -14,7 +14,13 @@ keywords = ["ecs", "game", "bevy"]
 categories = ["game-engines", "data-structures"]
 
 [features]
+#default = ["profile-with-optick"]
+default = ["profile-with-superluminal"]
 trace = []
+profile-with-puffin = ["profiling/profile-with-puffin"]
+profile-with-optick = ["profiling/profile-with-optick"]
+profile-with-superluminal = ["profiling/profile-with-superluminal"]
+profile-with-tracing = ["profiling/profile-with-tracing"]
 
 [dependencies]
 bevy_tasks = { path = "../bevy_tasks", version = "0.3.0" }
@@ -28,6 +34,9 @@ bitflags = "1.2.1"
 downcast-rs = "1.2.0"
 parking_lot = "0.11.0"
 lazy_static = { version = "1.4.0" }
+
+# profiling
+profiling = "0.1"
 
 [dev-dependencies]
 bencher = "0.1.5"

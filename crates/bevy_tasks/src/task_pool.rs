@@ -128,6 +128,7 @@ impl TaskPool {
 
                 thread_builder
                     .spawn(move || {
+                        profiling::register_thread!();
                         let shutdown_future = ex.run(shutdown_rx.recv());
                         // Use unwrap_err because we expect a Closed error
                         future::block_on(shutdown_future).unwrap_err();
